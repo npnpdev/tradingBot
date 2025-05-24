@@ -1,0 +1,216 @@
+import time
+import requests
+from datetime import datetime, timedelta
+import pandas as pd
+import talib  # TA-Lib
+
+# Inicjalizacja portfela i pozycji
+wallet = 10000  # np. 10,000 USDT
+position = None  # Przechowuje informacje o aktualnej pozycji ("long" lub "short")
+entry_price = None  # Cena zakupu
+stop_loss_percentage = 0.002  # -0.2%
+take_profit_percentage = 0.003  # 0.3%
+
+def get_historical_data(symbol, interval, start_time, end_time):
+    """
+    Funkcja pobierająca historyczne dane cenowe z Binance.
+    Zwraca DataFrame z danymi.
+    """
+    url = 'https://api.binance.com/api/v3/klines'
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'startTime': int(start_time.timestamp() * 1000),
+        'endTime': int(end_time.timestamp() * 1000),
+        'limit': 1000
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        # Przechowujemy dane w DataFrame
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        df['close'] = df['close'].astype(float)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        print(f"Błąd podczas pobierania danych historycznych: {e}")
+        return None
+
+def calculate_indicators(data):
+    """
+    Funkcja oblicza wskaźniki techniczne.
+    """
+    short_window = 50
+    long_window = 200
+    data['SMA_short'] = talib.SMA(data['close'], timeperiod=short_window)
+    data['SMA_long'] = talib.SMA(data['close'], timeperiod=long_window)
+
+def decision_maker(data):
+    """
+    Funkcja decyzyjna oparta na kombinacji sygnałów wskaźników.
+    """
+    latest_row = data.iloc[-1]
+    
+    buy_signals = 0
+    sell_signals = 0
+
+    # Przykład prostych reguł dla SMA
+    if pd.notna(latest_row['SMA_short']) and pd.notna(latest_row['SMA_long']):
+        if latest_row['SMA_short'] > latest_row['SMA_long']:
+            buy_signals += 1
+        elif latest_row['SMA_short'] < latest_row['SMA_long']:
+            sell_signals += 1
+
+    # Dodaj inne wskaźniki i ich logikę tutaj
+
+    # Podejmowanie decyzji
+    if buy_signals > sell_signals:
+        return 'buy'
+    elif sell_signals > buy_signals:
+        return 'sell'
+    else:
+        return 'hold'
+
+def moving_average_crossover_strategy(data):
+    """
+    Prosta strategia wykorzystująca kombinację sygnałów.
+    """
+    global wallet, position, entry_price
+    decision = decision_maker(data)
+    
+    latest_row = data.iloc[-1]
+
+    if decision == 'buy' and position is None:
+        # Kupujemy za cały kapitał
+        amount_to_invest = wallet
+        position = {'type': 'long', 'price': latest_row['close'], 'amount': amount_to_invest / latest_row['close']}
+        entry_price = latest_row['close']
+        print(f"Kupno! Cena: {latest_row['close']:.2f} Data: {latest_row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+
+    elif decision == 'sell' and position and position['type'] == 'long':
+        # Sprzedajemy wszystko
+        wallet = position['amount'] * latest_row['close']
+        position = None
+        entry_price = None
+        print(f"Sprzedaż! Cena: {latest_row['close']:.2f} Data: {latest_row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}")
+
+def simulate_trading(data, start_index):
+    """
+    Symulacja handlu po otwarciu pozycji z mechanizmami stop loss i take profit.
+    """
+    global wallet, position, entry_price
+    current_index = start_index
+    
+    while position:
+        # Sprawdź, czy mamy wystarczająco danych
+        if current_index >= len(data):
+            print("Brak nowych danych do analizy.")
+            return
+        
+        # Aktualizuj dane do najnowszej ceny
+        latest_row = data.iloc[current_index]
+        current_price = latest_row['close']
+        current_date = latest_row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Obliczanie poziomów stop loss i take profit
+        if position['type'] == 'long':
+            stop_loss_price = entry_price * (1 - stop_loss_percentage)
+            take_profit_price = entry_price * (1 + take_profit_percentage)
+        elif position['type'] == 'short':
+            stop_loss_price = entry_price * (1 + stop_loss_percentage)
+            take_profit_price = entry_price * (1 - take_profit_percentage)
+
+        # Sprawdź warunki stop loss i take profit
+        if position['type'] == 'long':
+            if current_price <= stop_loss_price:
+                print(f"Stop Loss aktywowany! Cena: {current_price:.2f} Data: {current_date}")
+                wallet = position['amount'] * current_price
+                position = None
+                entry_price = None
+                return
+            
+            if current_price >= take_profit_price:
+                print(f"Take Profit osiągnięty! Cena: {current_price:.2f} Data: {current_date}")
+                wallet = position['amount'] * current_price
+                position = None
+                entry_price = None
+                return
+
+        elif position['type'] == 'short':
+            if current_price >= stop_loss_price:
+                print(f"Stop Loss aktywowany! Cena: {current_price:.2f} Data: {current_date}")
+                wallet = (position['amount'] * entry_price) - (position['amount'] * current_price)
+                position = None
+                entry_price = None
+                return
+            
+            if current_price <= take_profit_price:
+                print(f"Take Profit osiągnięty! Cena: {current_price:.2f} Data: {current_date}")
+                wallet = (position['amount'] * entry_price) - (position['amount'] * current_price)
+                position = None
+                entry_price = None
+                return
+
+        # Wypisz aktualną wartość portfela i procentową zmianę
+        if position['type'] == 'long':
+            percentage_change = ((current_price - entry_price) / entry_price) * 100
+        elif position['type'] == 'short':
+            percentage_change = ((entry_price - current_price) / entry_price) * 100
+        
+        print(f"Aktualna cena BTC/USDT: {current_price:.2f} Data: {current_date}")
+        print(f"Wartość portfela: {wallet:.2f} USDT")
+        print(f"Procentowa zmiana: {percentage_change:.2f}%")
+
+        # Czekaj 5 sekund
+        time.sleep(5)
+        
+        # Przechodzimy do kolejnej ceny
+        current_index += 1
+
+def main():
+    """
+    Główna pętla aplikacji, która symuluje ruch ceny BTC/USDT na podstawie danych historycznych.
+    """
+    # Ustawienia historycznych danych
+    symbol = 'BTCUSDT'
+    interval = '1m'  # Interwał 1-minutowy
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=180)  # Pół roku temu
+
+    # Pobranie danych historycznych
+    historical_data = get_historical_data(symbol, interval, start_time, end_time)
+    if historical_data is None or len(historical_data) == 0:
+        print("Nie udało się pobrać danych historycznych.")
+        return
+
+    # Obliczamy wskaźniki techniczne
+    calculate_indicators(historical_data)
+
+    print(f"Pobrano {len(historical_data)} historycznych cen dla {symbol}.")
+
+    # Poczekaj minutę przed rozpoczęciem handlu
+    print("Poczekaj minutę, zbieranie danych...")
+    time.sleep(60)
+
+    try:
+        # Symulacja, która wykorzystuje dane historyczne
+        index = 200  # Zaczynamy od 200, bo mamy SMA na 200 okresów
+        while index < len(historical_data):
+            # Przekazujemy podzbiór danych do strategii
+            subset_data = historical_data.iloc[:index+1]
+            moving_average_crossover_strategy(subset_data)
+            
+            # Jeśli pozycja jest otwarta, symulujemy handel
+            if position:
+                simulate_trading(historical_data, index)
+            
+            # Czekaj 5 sekund przed kolejnym krokiem
+            time.sleep(5)
+            index += 1  # Przechodzimy do następnego indeksu
+
+    except KeyboardInterrupt:
+        print("Symulacja przerwana.")
+
+if __name__ == "__main__":
+    main()

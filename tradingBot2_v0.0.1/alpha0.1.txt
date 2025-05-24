@@ -1,0 +1,113 @@
+import time
+import requests
+from datetime import datetime, timedelta
+import pandas as pd
+import talib  # TA-Lib
+
+# Inicjalizacja portfela ze sztucznym kapitałem i pozycji
+wallet = 10000  # np. 10,000 USDT
+position = None  # Przechowuje informacje o aktualnej pozycji ("long" lub "short")
+
+def get_historical_data(symbol, interval, start_time, end_time):
+    """
+    Funkcja pobierająca historyczne dane cenowe z Binance.
+    Zwraca DataFrame z danymi.
+    """
+    url = 'https://api.binance.com/api/v3/klines'
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'startTime': int(start_time.timestamp() * 1000),
+        'endTime': int(end_time.timestamp() * 1000),
+        'limit': 1000
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        # Przechowujemy dane w DataFrame
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+        df['close'] = df['close'].astype(float)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        print(f"Błąd podczas pobierania danych historycznych: {e}")
+        return None
+
+def calculate_indicators(data):
+    """
+    Funkcja oblicza wskaźniki techniczne.
+    """
+    # Używamy TA-Lib do obliczenia prostych średnich kroczących
+    short_window = 50
+    long_window = 200
+    data['SMA_short'] = talib.SMA(data['close'], timeperiod=short_window)
+    data['SMA_long'] = talib.SMA(data['close'], timeperiod=long_window)
+
+def moving_average_crossover_strategy(data):
+    """
+    Prosta strategia wykorzystująca przecięcie średnich kroczących.
+    """
+    global wallet, position
+    latest_row = data.iloc[-1]
+    
+    # Sprawdź czy mamy już wszystkie potrzebne wartości wskaźników
+    if pd.notna(latest_row['SMA_short']) and pd.notna(latest_row['SMA_long']):
+        # Sygnał kupna
+        if latest_row['SMA_short'] > latest_row['SMA_long'] and position is None:
+            # Kupujemy za cały kapitał
+            print(f"Kupno! Cena: {latest_row['close']:.2f}")
+            position = 'long'
+        
+        # Sygnał sprzedaży
+        elif latest_row['SMA_short'] < latest_row['SMA_long'] and position == 'long':
+            # Sprzedajemy wszystko
+            print(f"Sprzedaż! Cena: {latest_row['close']:.2f}")
+            position = None
+
+def main():
+    """
+    Główna pętla aplikacji, która symuluje ruch ceny BTC/USDT na podstawie danych historycznych.
+    """
+    # Ustawienia historycznych danych
+    symbol = 'BTCUSDT'
+    interval = '1m'  # Interwał 1-minutowy
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=180)  # Pół roku temu
+
+    # Pobranie danych historycznych
+    historical_data = get_historical_data(symbol, interval, start_time, end_time)
+    if historical_data is None or len(historical_data) == 0:
+        print("Nie udało się pobrać danych historycznych.")
+        return
+
+    # Obliczamy wskaźniki techniczne
+    calculate_indicators(historical_data)
+
+    print(f"Pobrano {len(historical_data)} historycznych cen dla {symbol}.")
+
+    try:
+        # Symulacja, która wykorzystuje dane historyczne
+        index = 200  # Zaczynamy od 200, bo mamy SMA na 200 okresów
+        while index < len(historical_data):
+            # Przekazujemy podzbiór danych do strategii
+            subset_data = historical_data.iloc[:index+1]
+            moving_average_crossover_strategy(subset_data)
+            
+            # Wypisz aktualną cenę i datę
+            latest_row = subset_data.iloc[-1]
+            date = latest_row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+            print(f"Aktualna cena BTC/USDT (sprzed pół roku - {date}): {latest_row['close']:.2f} USDT")
+            print(f"Wartość portfela: {wallet:.2f} USDT")
+            
+            # Czekaj 5 sekund
+            time.sleep(5)
+            
+            # Przechodzimy do kolejnej ceny
+            index += 1
+
+    except KeyboardInterrupt:
+        print("\nZakończono działanie aplikacji.")
+
+if __name__ == "__main__":
+    main()
